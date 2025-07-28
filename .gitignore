@@ -1,0 +1,6 @@
+.env
+.env.*     # optional - ignores .env.local, .env.production, etc.
+node_modules
+build/
+dist/
+.env
