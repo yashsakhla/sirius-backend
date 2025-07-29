@@ -20,10 +20,11 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 app.use(cors({
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    credentials: true,
-  },));
+  origin: ['https://sirius-perfumes.vercel.app', 'http://localhost:3000', 'http://localhost:3001',"https://vercel.com"],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true,
+}));
+
 
 // ROUTES
 app.use("/api/auth", authRouter);

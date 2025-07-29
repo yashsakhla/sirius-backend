@@ -12,7 +12,7 @@ router.get('/category-products', getGroupedProducts);
 router.post('/add-product', authenticator, adminAuth, createProduct)
 router.put('/:id', authenticator, adminAuth, updateProduct)
 router.delete('/:id', authenticator, adminAuth, deleteProduct)
-router.post('/cart-price', getCartPrice);
+router.post('/cart-price', authenticator, getCartPrice);
 router.post('/offer', authenticator, adminAuth, createOffer);
 router.get('/offer', authenticator, adminAuth, getOffers);
 router.put('/offer/:code', authenticator, adminAuth, updateOffer);

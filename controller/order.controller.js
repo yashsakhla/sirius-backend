@@ -1,31 +1,31 @@
 import Order from '../models/Order.js';
 import User from '../models/User.js';
+import Offer from '../models/Offers.js';
 
 // ✅ User places an order
 export const createOrder = async (req, res) => {
   try {
     const {
       products,
-      coupon,
-      offer,
+      coupon,   // coupon code string sent from client
+      offer,    // offer object? or name, etc. Verify what's sent
       totalPrice,
       paymentMode,
     } = req.body;
 
-    // ✅ Get email from JWT (already decoded by your middleware)
     const userEmail = req.user?.email;
 
     if (!products?.length || !userEmail || !totalPrice || !paymentMode) {
       return res.status(400).json({ message: "Missing required fields." });
     }
 
-    // ✅ Find user by email
+    // Find user by email
     const user = await User.findOne({ email: userEmail });
     if (!user) {
       return res.status(401).json({ message: "User not found." });
     }
 
-    // ✅ Create the order with owner from database
+    // Create the order
     const newOrder = new Order({
       products,
       coupon,
@@ -44,10 +44,27 @@ export const createOrder = async (req, res) => {
 
     await newOrder.save();
 
-    res.status(201).json({ message: "Order placed successfully", order: newOrder });
+    // After successful order, check coupon operation
+    if (coupon) {
+      // Find the applied offer by coupon code
+      const appliedOffer = await Offer.findOne({ code: coupon.toUpperCase() });
+
+      // If offer exists and operationId === 1, upgrade user to premium
+      if (appliedOffer && appliedOffer.operationId === 1) {
+        if (!user.premiumUser) { // Avoid redundant updates
+          user.premiumUser = true;
+          // Save updated user info
+          await user.save();
+
+          // Optionally: log or notify, e.g. console.log('User upgraded to premium');
+        }
+      }
+    }
+
+    return res.status(201).json({ message: "Order placed successfully", order: newOrder });
   } catch (err) {
     console.error("❌ Error placing order:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 };
 

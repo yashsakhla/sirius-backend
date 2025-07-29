@@ -1,5 +1,6 @@
 import Product from '../models/Product.js';
-import Offer from '../models/Offers.js';
+import Offer from '../models/Offers.js';// Adjust import based on your project structure
+import User from '../models/User.js';
 
 export const getGroupedProducts = async (req, res) => {
   try {
@@ -131,12 +132,21 @@ export const deleteProduct = async (req, res) => {
  * Calculate cart price based on products and coupon code
  * POST /api/products/cart-price
  */
+
 export const getCartPrice = async (req, res) => {
   try {
     const { products, couponCode } = req.body;
 
-    if (!Array.isArray(products) || !products.length) {
+    if (!Array.isArray(products) || products.length === 0) {
       return res.status(400).json({ error: 'No products provided' });
+    }
+
+    // Default userType to Standard if unauthenticated
+    let userType = "Standard";
+
+    if (req.user && req.user.id) {
+      const user = await User.findById(req.user.id).select('premiumUser');
+      userType = user?.premiumUser ? 'Premium' : 'Standard';
     }
 
     const productIds = products.map(item => item.productId);
@@ -163,15 +173,64 @@ export const getCartPrice = async (req, res) => {
     let discount = 0;
     let appliedOffer = null;
 
-    if (couponCode) {
-      const offer = await Offer.findOne({ code: couponCode.toUpperCase() });
+    /**
+     * Calculate offer and discount:
+     * - If user is Premium and no couponCode given:
+     *   - Find any premium offer with premiumApplicability = 'All'
+     *   - Apply that offer's discount percent if of type 'Percent'
+     * - Else (if couponCode provided), apply normal logic
+     */
+
+    if (userType === 'Premium' && (!couponCode || couponCode.trim() === '')) {
+      // Find any premium coupon with premiumApplicability = 'All'
+      const premiumOffer = await Offer.findOne({
+        userType: 'Premium',
+        premiumApplicability: 'All',
+        active: true
+      });
+
+      if (premiumOffer) {
+        appliedOffer = premiumOffer;
+
+        if (premiumOffer.type === 'Percent' && premiumOffer.percent) {
+          discount = (subtotal * premiumOffer.percent) / 100;
+        } else if (premiumOffer.type === 'Free Delivery') {
+          discount = 50; // or your delivery fee
+        } else if (premiumOffer.type === 'Buy X Get Y Free') {
+          const totalQty = products.reduce((sum, item) => sum + item.qty, 0);
+          if (totalQty >= premiumOffer.buyQty) {
+            const cheapest = Math.min(...dbProducts.map(p => p.price));
+            discount = cheapest * (premiumOffer.freeQty || 1);
+          }
+        }
+      }
+    } else if (couponCode && couponCode.trim() !== '') {
+      // Normal flow with user-supplied couponCode
+      const userTypeFilter = userType === "Premium"
+        ? { userType: { $in: ["Standard", "Premium"] } }
+        : { userType: "Standard" };
+
+      let offer = await Offer.findOne({
+        code: couponCode.toUpperCase(),
+        ...userTypeFilter,
+        active: true,
+      });
+
+      if (offer && userType === 'Premium') {
+        if (offer.userType === 'Premium' && offer.premiumApplicability) {
+          if (offer.premiumApplicability !== 'All') {
+            offer = null; // Not applicable coupon
+          }
+        }
+      }
+
       if (offer) {
         appliedOffer = offer;
 
         if (offer.type === 'Percent' && offer.percent) {
           discount = (subtotal * offer.percent) / 100;
         } else if (offer.type === 'Free Delivery') {
-          discount = 50; // or your delivery fee
+          discount = 50;
         } else if (offer.type === 'Buy X Get Y Free') {
           const totalQty = products.reduce((sum, item) => sum + item.qty, 0);
           if (totalQty >= offer.buyQty) {
@@ -182,11 +241,16 @@ export const getCartPrice = async (req, res) => {
       }
     }
 
-    const total = Math.max(0, subtotal - discount);
+    // Compute tax and delivery
+    const tax = +(subtotal * 0.02).toFixed(2);
+    const deliveryCharges = 75;
+    const total = Math.max(0, subtotal - discount + tax + deliveryCharges);
 
     res.json({
       subtotal,
       discount,
+      tax,
+      deliveryCharges,
       total,
       couponApplied: appliedOffer?.code || null,
       detailed
@@ -196,6 +260,9 @@ export const getCartPrice = async (req, res) => {
     res.status(500).json({ error: 'Failed to calculate cart price' });
   }
 };
+
+
+
 
 
 export const createOffer = async (req, res) => {
