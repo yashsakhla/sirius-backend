@@ -10,10 +10,11 @@ export const getAccountDetails = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-     res.json({
+    res.json({
       name: user.name,
       email: user.email,
-      address: user.address, // ✅ Will return as object
+      phone: user.phone || "",          // Added phone here
+      address: user.address,            // Returning as object
       cart: user.cart,
       orders: user.orders,
       premiumUser: user.premiumUser
@@ -28,12 +29,13 @@ export const getAccountDetails = async (req, res) => {
 
 export const updateAccount = async (req, res) => {
   const userId = req.user.id;
-  const { name, address } = req.body;
+  const { name, address, phone } = req.body;
 
   try {
     const updates = {};
-    if (name) updates.name = name;
-    if (address) updates.address = address;
+    if (name !== undefined) updates.name = name;
+    if (address !== undefined) updates.address = address;
+    if (phone !== undefined) updates.phone = phone;
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ message: 'No data provided for update.' });
@@ -52,7 +54,8 @@ export const updateAccount = async (req, res) => {
     res.json({
       name: updatedUser.name,
       email: updatedUser.email,
-      address: updatedUser.address, // ✅ Will return as object
+      phone: updatedUser.phone || "",   // Include phone here
+      address: updatedUser.address,
       cart: updatedUser.cart,
       orders: updatedUser.orders,
       premiumUser: updatedUser.premiumUser
@@ -62,6 +65,7 @@ export const updateAccount = async (req, res) => {
     res.status(500).json({ message: 'Server error.' });
   }
 };
+
 
 export const getAllUsers = async (req, res) => {
   try {

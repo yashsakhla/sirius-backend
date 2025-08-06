@@ -1,4 +1,3 @@
-// controller/auth.controller.js
 import { OAuth2Client } from 'google-auth-library';
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
@@ -18,12 +17,16 @@ export const googleLogin = async (req, res) => {
 
     const { name, email } = payload;
 
-    // Find user or create new
+    // For now, phone is not available in Google ID token; initialize as empty string
+    let phone = '';
+
+    // Find user or create if doesn't exist
     let user = await User.findOne({ email });
     if (!user) {
       user = await User.create({
         name,
         email,
+        phone,   // Initialize phone as empty string or null
         cart: [],
         orders: [],
         address: '',
@@ -31,7 +34,7 @@ export const googleLogin = async (req, res) => {
       });
     }
 
-    // ✅ Now create your own backend session token
+    // Create JWT token
     const token = jwt.sign(
       { id: user._id, email: user.email },
       process.env.JWT_SECRET,
@@ -40,11 +43,12 @@ export const googleLogin = async (req, res) => {
 
     res.status(200).json({
       message: 'Login successful',
-      token, // 🔐 use this JWT for future requests
+      token,
       user: {
         id: user._id,
         name: user.name,
-        email: user.email
+        email: user.email,
+        phone: user.phone || ''   // Include phone in response if set
       }
     });
 
@@ -53,5 +57,3 @@ export const googleLogin = async (req, res) => {
     res.status(401).json({ message: 'Invalid Google ID token.' });
   }
 };
-
-

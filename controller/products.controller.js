@@ -39,33 +39,29 @@ export const getProductsList = async (req, res) => {
 
 export const createProduct = async (req, res) => {
   try {
-    const { name, description, image, price, size, category, active } = req.body;
-
-    // ✅ Validate required fields
+    const { name, description, image, size, category, price, active } = req.body;
+    // 'price' from admin is 'discountedPrice'
     if (!name || !price) {
       return res.status(400).json({ message: 'Required fields are missing (name, price)' });
     }
-
-    // ✅ Check if a product already exists with the same name
     const exists = await Product.findOne({ name });
     if (exists) {
       return res.status(400).json({ message: 'Product with this name already exists' });
     }
+    const discountedPrice = parseFloat(price);
+    const basicPrice = parseFloat((discountedPrice * 1.10).toFixed(2));
 
-    // ✅ Create a new Product instance (don't set `id`)
     const newProduct = new Product({
       name,
       description,
       image,
-      price,
       size,
       category,
-      active: active !== undefined ? active : true, // default to true
+      discountedPrice,
+      basicPrice,
+      active: active !== undefined ? active : true,
     });
-
-    // ✅ Save to database
     await newProduct.save();
-
     res.status(201).json({
       message: 'Product created successfully',
       product: newProduct,
@@ -79,35 +75,36 @@ export const createProduct = async (req, res) => {
 // ✅ UPDATE PRODUCT
 export const updateProduct = async (req, res) => {
   try {
-    const { id } = req.params; // this is _id from MongoDB
-    const { name, description, price, image, active } = req.body;
+    const { id } = req.params;
+    const { name, description, image, size, category, discountedPrice, active } = req.body;
 
-    const updateFields = {};
-    if (name !== undefined) updateFields.name = name;
-    if (description !== undefined) updateFields.description = description;
-    if (price !== undefined) updateFields.price = price;
-    if (image !== undefined) updateFields.image = image;
-    if (active !== undefined) updateFields.active = active;
+    let updateFields = {};
+    if (name != null) updateFields.name = name;
+    if (description != null) updateFields.description = description;
+    if (image != null) updateFields.image = image;
+    if (size != null) updateFields.size = size;
+    if (category != null) updateFields.category = category;
+    if (discountedPrice != null) {
+      updateFields.discountedPrice = parseFloat(discountedPrice);
+      updateFields.basicPrice = parseFloat((discountedPrice * 1.10).toFixed(2));
+    }
+    if (active != null) updateFields.active = active;
 
     const updatedProduct = await Product.findByIdAndUpdate(
-      id, // _id from MongoDB
+      id,
       { $set: updateFields },
       { new: true }
     );
-
     if (!updatedProduct) {
       return res.status(404).json({ message: 'Product not found' });
     }
-
-    res.status(200).json({
-      message: 'Product updated successfully',
-      product: updatedProduct,
-    });
+    res.status(200).json({ message: 'Product updated successfully', product: updatedProduct });
   } catch (error) {
     console.error('❌ Error updating product:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
+
 
 
 // ✅ DELETE PRODUCT
@@ -141,31 +138,36 @@ export const getCartPrice = async (req, res) => {
       return res.status(400).json({ error: 'No products provided' });
     }
 
-    // Default userType to Standard if unauthenticated
+    // Default userType to Standard if auth missing
     let userType = "Standard";
-
     if (req.user && req.user.id) {
       const user = await User.findById(req.user.id).select('premiumUser');
       userType = user?.premiumUser ? 'Premium' : 'Standard';
     }
 
+    // Get DB product info
     const productIds = products.map(item => item.productId);
     const dbProducts = await Product.find({ _id: { $in: productIds } });
 
-    let subtotal = 0;
+    let discountedSubtotal = 0;
+    let basicSubtotal = 0;
     const detailed = [];
 
     for (const item of products) {
       const product = dbProducts.find(p => p._id.toString() === item.productId);
       if (product) {
-        const itemTotal = product.price * item.qty;
-        subtotal += itemTotal;
+        const discountedTotal = (product.discountedPrice || product.price) * item.qty;
+        const basicTotal = (product.basicPrice || (product.discountedPrice * 1.10) || (product.price * 1.10)) * item.qty;
+        discountedSubtotal += discountedTotal;
+        basicSubtotal += basicTotal;
         detailed.push({
           _id: product._id,
           name: product.name,
-          price: product.price,
+          discountedPrice: product.discountedPrice,
+          basicPrice: product.basicPrice,
           qty: item.qty,
-          total: itemTotal
+          discountedTotal,
+          basicTotal
         });
       }
     }
@@ -173,16 +175,9 @@ export const getCartPrice = async (req, res) => {
     let discount = 0;
     let appliedOffer = null;
 
-    /**
-     * Calculate offer and discount:
-     * - If user is Premium and no couponCode given:
-     *   - Find any premium offer with premiumApplicability = 'All'
-     *   - Apply that offer's discount percent if of type 'Percent'
-     * - Else (if couponCode provided), apply normal logic
-     */
+    // --- Offer & coupon logic: always based on discountedSubtotal ---
 
     if (userType === 'Premium' && (!couponCode || couponCode.trim() === '')) {
-      // Find any premium coupon with premiumApplicability = 'All'
       const premiumOffer = await Offer.findOne({
         userType: 'Premium',
         premiumApplicability: 'All',
@@ -191,21 +186,19 @@ export const getCartPrice = async (req, res) => {
 
       if (premiumOffer) {
         appliedOffer = premiumOffer;
-
         if (premiumOffer.type === 'Percent' && premiumOffer.percent) {
-          discount = (subtotal * premiumOffer.percent) / 100;
+          discount = (discountedSubtotal * premiumOffer.percent) / 100;
         } else if (premiumOffer.type === 'Free Delivery') {
-          discount = 50; // or your delivery fee
+          discount = 50; // your delivery fee
         } else if (premiumOffer.type === 'Buy X Get Y Free') {
           const totalQty = products.reduce((sum, item) => sum + item.qty, 0);
           if (totalQty >= premiumOffer.buyQty) {
-            const cheapest = Math.min(...dbProducts.map(p => p.price));
+            const cheapest = Math.min(...dbProducts.map(p => p.discountedPrice || p.price));
             discount = cheapest * (premiumOffer.freeQty || 1);
           }
         }
       }
     } else if (couponCode && couponCode.trim() !== '') {
-      // Normal flow with user-supplied couponCode
       const userTypeFilter = userType === "Premium"
         ? { userType: { $in: ["Standard", "Premium"] } }
         : { userType: "Standard" };
@@ -216,42 +209,38 @@ export const getCartPrice = async (req, res) => {
         active: true,
       });
 
-      if (offer && userType === 'Premium') {
-        if (offer.userType === 'Premium' && offer.premiumApplicability) {
-          if (offer.premiumApplicability !== 'All') {
-            offer = null; // Not applicable coupon
-          }
-        }
+      if (offer && userType === 'Premium' && offer.userType === 'Premium' && offer.premiumApplicability) {
+        if (offer.premiumApplicability !== 'All') offer = null;
       }
 
       if (offer) {
         appliedOffer = offer;
-
         if (offer.type === 'Percent' && offer.percent) {
-          discount = (subtotal * offer.percent) / 100;
+          discount = (discountedSubtotal * offer.percent) / 100;
         } else if (offer.type === 'Free Delivery') {
           discount = 50;
         } else if (offer.type === 'Buy X Get Y Free') {
           const totalQty = products.reduce((sum, item) => sum + item.qty, 0);
           if (totalQty >= offer.buyQty) {
-            const cheapest = Math.min(...dbProducts.map(p => p.price));
+            const cheapest = Math.min(...dbProducts.map(p => p.discountedPrice || p.price));
             discount = cheapest * (offer.freeQty || 1);
           }
         }
       }
     }
 
-    // Compute tax and delivery
-    const tax = +(subtotal * 0.02).toFixed(2);
-    const deliveryCharges = 75;
-    const total = Math.max(0, subtotal - discount + tax + deliveryCharges);
+    // --- Tax and total (use discountedSubtotal for customer price!) ---
+    const tax = +(discountedSubtotal * 0.02).toFixed(2);
+    const deliveryCharges = 0;
+    const total = Math.max(0, discountedSubtotal - discount + tax + deliveryCharges);
 
     res.json({
-      subtotal,
-      discount,
+      discountedSubtotal: +discountedSubtotal.toFixed(2),
+      basicSubtotal: +basicSubtotal.toFixed(2),
+      discount: +discount.toFixed(2),
       tax,
       deliveryCharges,
-      total,
+      total: +total.toFixed(2),
       couponApplied: appliedOffer?.code || null,
       detailed
     });
@@ -260,6 +249,7 @@ export const getCartPrice = async (req, res) => {
     res.status(500).json({ error: 'Failed to calculate cart price' });
   }
 };
+
 
 
 
