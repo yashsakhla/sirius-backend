@@ -16,14 +16,39 @@ import orderRoutes from './routes/order.route.js'
 import dotenv from 'dotenv';
 dotenv.config();
 
+const allowedOrigins = [
+  '*',
+  'https://sirius-perfumes.vercel.app',
+  'https://siriusperfumes.com',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://vercel.com',
+  'https://sirius-perfumes-yckn.vercel.app',
+  'https://accounts.google.com',
+  'http://api.siriusperfumes.com',
+  'https://api.siriusperfumes.com',
+  'http://siriusperfumes.com',
+  'http://admin.siriusperfumes.com',
+  'https://admin.siriusperfumes.com'
+];
+
+
 
 const app = express();
 app.use(express.json());
-app.use(cors({
-  origin: ['*','https://sirius-perfumes.vercel.app', "https://siriusperfumes.com", 'http://localhost:3000', 'http://localhost:3001',"https://vercel.com", "https://sirius-perfumes-yckn.vercel.app", "https://accounts.google.com", "http://api.siriusperfumes.com","https://api.siriusperfumes.com","http://siriusperfumes.com","http://admin.siriusperfumes.com", "https://admin.siriusperfumes.com"],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true,
-}));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+    res.header('Access-Control-Allow-Origin', origin || '*');
+  }
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 
 // ROUTES
