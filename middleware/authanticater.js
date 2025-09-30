@@ -10,7 +10,7 @@ export const authenticator = (req, res, next) => {
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET); // ✅ your token
+    const decoded = jwt.verify(token, "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"); // ✅ your token
     req.user = decoded; // ✅ you should now have decoded.id and email
     next();
   } catch (err) {
