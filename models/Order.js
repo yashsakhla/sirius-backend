@@ -5,11 +5,13 @@ const orderSchema = new mongoose.Schema(
   {
     products: [{ type: String, required: true }], // could be product names or IDs (improvable)
     date: { type: Date, default: Date.now },
-    status: {
+    Deliverystatus: {
       type: String,
       enum: ['Processing', 'Dispatched', 'Delivered', 'Cancelled'],
       default: 'Processing'
     },
+    paymentStatus: { type: String, enum: ['Pending', 'Completed', 'Failed'], default: 'Pending' },
+    transactionId: { type: String },
     owner: {
       name: String,
       email: String,

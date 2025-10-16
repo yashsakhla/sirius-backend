@@ -228,17 +228,17 @@ export const getCartPrice = async (req, res) => {
         }
       }
     }
-
+    
     // --- Tax and total (use discountedSubtotal for customer price!) ---
     const tax = +(discountedSubtotal * 0.02).toFixed(2);
     const deliveryCharges = 0;
-    const total = Math.max(0, discountedSubtotal - discount + tax + deliveryCharges);
+    const total = Math.max(0, discountedSubtotal - discount + Math.round(tax) + deliveryCharges);
 
     res.json({
       discountedSubtotal: +discountedSubtotal.toFixed(2),
       basicSubtotal: +basicSubtotal.toFixed(2),
       discount: +discount.toFixed(2),
-      tax,
+      tax: Math.round(tax),
       deliveryCharges,
       total: +total.toFixed(2),
       couponApplied: appliedOffer?.code || null,

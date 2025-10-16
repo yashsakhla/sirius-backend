@@ -14,6 +14,7 @@ import userRouter from './routes/user.route.js'; // ✅ correct file
 import categoryRoutes from './routes/category.route.js';
 import orderRoutes from './routes/order.route.js'
 import dotenv from 'dotenv';
+import paymentRoutes from './routes/payment.route.js';
 dotenv.config();
 
 
@@ -33,6 +34,7 @@ app.use("/api/perfumes", productsRouter);
 app.use("/api/user", userRouter);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/payment/phonepe', paymentRoutes);
 
 // Create HTTP server
 const server = http.createServer(app);
