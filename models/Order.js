@@ -3,14 +3,16 @@ import mongoose from 'mongoose';
 
 const orderSchema = new mongoose.Schema(
   {
-    products: [{ type: String, required: true }], // could be product names or IDs (improvable)
+    products: [{ type: String, required: true }],
+    productImg: { type: String}, // could be product names or IDs (improvable)
     date: { type: Date, default: Date.now },
     Deliverystatus: {
       type: String,
       enum: ['Processing', 'Dispatched', 'Delivered', 'Cancelled'],
       default: 'Processing'
     },
-    paymentStatus: { type: String, enum: ['Pending', 'Completed', 'Failed'], default: 'Pending' },
+    paymentStatus: { type: String, enum: ['PENDING', 'COMPLETED', 'FAILED'], default: 'PENDING' },
+    merchantOrderId: { type: String, required: true, unique: true },
     transactionId: { type: String },
     owner: {
       name: String,
@@ -23,6 +25,9 @@ const orderSchema = new mongoose.Schema(
     coupon: { type: String },
     offer: { type: String },
     totalPrice: { type: Number, required: true },
+    processingDate: { type: Date,default: Date.now },
+    dispatchDate: { type: Date,default: Date.now },
+    deliveryDate: { type: Date,default: Date.now },
     paymentMode: { type: String, enum: ['Cash', 'Credit Card', 'UPI'] },
   },
   { timestamps: true }

@@ -49,7 +49,7 @@ export const createProduct = async (req, res) => {
       return res.status(400).json({ message: 'Product with this name already exists' });
     }
     const discountedPrice = parseFloat(price);
-    const basicPrice = parseFloat((discountedPrice * 1.10).toFixed(2));
+    const basicPrice = parseFloat((discountedPrice * 2).toFixed(2));
 
     const newProduct = new Product({
       name,
@@ -86,7 +86,7 @@ export const updateProduct = async (req, res) => {
     if (category != null) updateFields.category = category;
     if (discountedPrice != null) {
       updateFields.discountedPrice = parseFloat(discountedPrice);
-      updateFields.basicPrice = parseFloat((discountedPrice * 1.10).toFixed(2));
+      updateFields.basicPrice = parseFloat((discountedPrice * 2).toFixed(2));
     }
     if (active != null) updateFields.active = active;
 
@@ -157,7 +157,7 @@ export const getCartPrice = async (req, res) => {
       const product = dbProducts.find(p => p._id.toString() === item.productId);
       if (product) {
         const discountedTotal = (product.discountedPrice || product.price) * item.qty;
-        const basicTotal = (product.basicPrice || (product.discountedPrice * 1.10) || (product.price * 1.10)) * item.qty;
+        const basicTotal = (product.basicPrice || (product.discountedPrice * 2) || (product.price * 2)) * item.qty;
         discountedSubtotal += discountedTotal;
         basicSubtotal += basicTotal;
         detailed.push({

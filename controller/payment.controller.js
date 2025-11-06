@@ -1,6 +1,5 @@
 import axios from 'axios';
-import { v4 as uuidv4 } from 'uuid'; // For unique orderId, install with: npm install uuid
-import { updatePaymentStatus, updatePaymentStatusByMerchantOrderId } from './order.controller';
+
 
 export async function getAuthToken() {
   const params = new URLSearchParams();
@@ -10,7 +9,7 @@ export async function getAuthToken() {
   params.append('client_version', '1');
 
   const response = await axios.post(
-    'https://api-preprod.phonepe.com/apis/pg-sandbox/v1/oauth/token',
+    'https://api.phonepe.com/apis/identity-manager/v1/oauth/token',
     params.toString(),
     { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
   );
@@ -18,85 +17,61 @@ export async function getAuthToken() {
   return response.data.access_token;
 }
 
-export async function createPhonePePayment(req, res) {
+export async function getPhonePeToken(req, res) {
   try {
+    const { totalPrice, merchantOrderId } = req.body;
     const token = await getAuthToken();
-    const totalAmount = req.body.totalPrice; // Amount in paise (e.g., 100 paise = ₹1)
-
-    const requestHeaders = {
-      "Content-Type": "application/json",
-      "Authorization": `O-Bearer ${token}`
-    };
-// Use merchant ID from environment variables
-    const requestBody = {
-        "merchantOrderId": process.env.PHONEPE_MERCHANT_ID,
-      "amount": totalAmount * 100, // Convert to paise
-      "expireAfter": 1200,
-      "metaInfo": {
-        "udf1": "additional-information-1",
-        "udf2": "additional-information-2",
-        "udf3": "additional-information-3",
-        "udf4": "additional-information-4",
-        "udf5": "additional-information-5"
+    const tokenResponse = await axios.post(
+      "https://api.phonepe.com/apis/pg/checkout/v2/pay",
+      {
+        merchantId: process.env.PHONEPE_MERCHANT_ID,
+        merchantOrderId,
+        amount: totalPrice * 100,
+        paymentFlow: {
+          type: "PG_CHECKOUT",
+          message: "Payment for Sirius Perfumes Order",
+          merchantUrls: {
+            redirectUrl: "https://www.siriusperfumes.com/payment-success"
+          }
+        }
       },
-      "paymentFlow": {
-        "type": "PG_CHECKOUT",
-        "message": "Payment message used for collect requests",
-        "merchantUrls": {
-          "redirectUrl": "https://siriusperfumes.com/cart" // set your redirect URL here
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `O-Bearer ${token}`
         }
       }
-    };
-
-    const options = {
-      method: 'POST',
-      url: 'https://api-preprod.phonepe.com/apis/pg-sandbox/checkout/v2/pay',
-      headers: requestHeaders,
-      data: requestBody
-    };
-
-    const response = await axios.request(options);
-    console.log(response.data);
-        return res.status(201).json({
-      success: true,
-      message: "Order created and payment initiated",
-      order: newOrder,
-      payment: response.data
-    });
-
-  } catch (error) {
-    console.error("Error in creating payment:", error.response?.data || error.message);
-    return res.status(500).json({ error: "Payment failed" });
-  }
-}
-
-export async function verifyWebhookAuth(req, res) {
-  try {
-    const authHeader = req.headers['authorization'];
-    const expectedAuth = process.env.WEBHOOK_AUTH_HEADER;
-
-    if (!authHeader || authHeader !== expectedAuth) {
-      return res.status(401).json({ error: "Unauthorized webhook request" });
-    }
-
-    const { merchantOrderId, paymentStatus, transactionId } = req.body;
-
-    if (!merchantOrderId || !paymentStatus) {
-      return res.status(400).json({ error: "Invalid webhook payload" });
-    }
-
-    // call refactored service function
-    const updatedOrder = await updatePaymentStatusByMerchantOrderId(
-      merchantOrderId,
-      paymentStatus === "SUCCESS" || paymentStatus === "COMPLETED" ? "CONFIRMED" : "FAILED",
-      transactionId
     );
 
-    return res.status(200).send("Webhook received and order updated");
-
-  } catch (error) {
-    console.error("Webhook handler error:", error);
-    return res.status(500).send("Internal Server Error");
+    return res.json({
+      token: token, // this is what PhonePe iframe needs
+      redirectUrl: tokenResponse.data?.redirectUrl,
+      data: tokenResponse.data
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    return res.status(500).json({ error: "Failed to generate token" });
   }
 }
 
+export async function getPaymentStatus(merchantOrderId, token) {
+  try {
+    if (!merchantOrderId) {
+      return { error: "Missing merchantOrderId" };
+    }
+    const response = await axios.get(
+      `	https://api.phonepe.com/apis/pg/checkout/v2/order/${merchantOrderId}/status`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `O-Bearer ${token}`,
+          "X-Merchant-Id": process.env.PHONEPE_MERCHANT_ID
+        }
+      }
+    );
+
+    return response.data;
+  } catch (err) {
+    return err.response?.data || err.message;
+  }
+}

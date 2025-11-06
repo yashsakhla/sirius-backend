@@ -34,7 +34,7 @@ app.use("/api/perfumes", productsRouter);
 app.use("/api/user", userRouter);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/orders', orderRoutes);
-app.use('/api/payment/phonepe', paymentRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // Create HTTP server
 const server = http.createServer(app);

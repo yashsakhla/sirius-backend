@@ -7,8 +7,9 @@ export const connectDB = async () => {
 
   try {
     await mongoose.connect(mongoURI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+      // useNewUrlParser: true,
+      // useUnifiedTopology: true,
+      dbName: 'sirius-perfumes'
     });
     console.log("✅ MongoDB connected successfully.");
   } catch (err) {
