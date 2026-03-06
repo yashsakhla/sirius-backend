@@ -23,7 +23,7 @@ app.use(express.json());
 const allowedOrigins = [
   "https://www.siriusperfumes.com",
   "https://siriusperfumes.com",
-  "http://localhost:3000"
+  "http://localhost:3000",
   "https://sirius-perfumes.vercel.app",
   "https://sirius-perfumes-yckn.vercel.app",
   "https://vercel.com",

@@ -1,11 +1,31 @@
+import mongoose from 'mongoose';
 import Product from '../models/Product.js';
 import Review from '../models/Review.js';
 import Offer from '../models/Offers.js';// Adjust import based on your project structure
 import User from '../models/User.js';
 
+/** Get averageRating & ratingCount per productId from Review collection */
+async function getAverageRatingsByProductIds(productIds) {
+  if (!productIds?.length) return {};
+  const ids = productIds.map(id => (id instanceof mongoose.Types.ObjectId ? id : new mongoose.Types.ObjectId(id)));
+  const results = await Review.aggregate([
+    { $match: { productId: { $in: ids } } },
+    { $group: { _id: '$productId', averageRating: { $avg: '$rating' }, ratingCount: { $sum: 1 } } }
+  ]);
+  const map = {};
+  results.forEach(r => {
+    map[r._id.toString()] = {
+      averageRating: Math.round(r.averageRating * 10) / 10,
+      ratingCount: r.ratingCount
+    };
+  });
+  return map;
+}
+
 export const getGroupedProducts = async (req, res) => {
   try {
     const allProducts = await Product.find();
+    const ratingMap = await getAverageRatingsByProductIds(allProducts.map(p => p._id));
 
     const categoryMap = new Map();
     allProducts.forEach(product => {
@@ -13,7 +33,8 @@ export const getGroupedProducts = async (req, res) => {
       if (!categoryMap.has(category)) {
         categoryMap.set(category, []);
       }
-      categoryMap.get(category).push(product);
+      const ratingData = ratingMap[product._id.toString()] || { averageRating: 0, ratingCount: 0 };
+      categoryMap.get(category).push({ ...product.toObject(), ...ratingData });
     });
 
     const grouped = Array.from(categoryMap.entries()).map(([category, products]) => ({
@@ -30,8 +51,13 @@ export const getGroupedProducts = async (req, res) => {
 
 export const getProductsList = async (req, res) => {
   try {
-    const product = await Product.find().sort({ createdAt: -1 });
-    res.status(200).json(product);
+    const products = await Product.find().sort({ createdAt: -1 });
+    const ratingMap = await getAverageRatingsByProductIds(products.map(p => p._id));
+    const productsWithRating = products.map(p => {
+      const ratingData = ratingMap[p._id.toString()] || { averageRating: 0, ratingCount: 0 };
+      return { ...p.toObject(), ...ratingData };
+    });
+    res.status(200).json(productsWithRating);
   } catch (err) {
     console.error('Error fetching Product:', err.message);
     res.status(500).json({ message: 'Server error' });
@@ -45,7 +71,9 @@ export const getProductDetails = async (req, res) => {
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
-    res.status(200).json(product);
+    const ratingMap = await getAverageRatingsByProductIds([product._id]);
+    const ratingData = ratingMap[product._id.toString()] || { averageRating: 0, ratingCount: 0 };
+    res.status(200).json({ ...product.toObject(), ...ratingData });
   } catch (err) {
     console.error('Error fetching product details:', err.message);
     res.status(500).json({ message: 'Server error' });
