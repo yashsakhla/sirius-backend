@@ -20,10 +20,31 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
+const allowedOrigins = [
+  "https://www.siriusperfumes.com",
+  "https://siriusperfumes.com",
+  "http://localhost:3000"
+  "https://sirius-perfumes.vercel.app",
+  "https://sirius-perfumes-yckn.vercel.app",
+  "https://vercel.com",
+  "https://accounts.google.com",
+  "http://api.siriusperfumes.com",
+  "https://api.siriusperfumes.com",
+  "http://siriusperfumes.com",
+  "http://admin.siriusperfumes.com",
+  "https://admin.siriusperfumes.com",
+];
+
 app.use(cors({
-  origin: ['*', 'https://siriusperfumes.com', 'https://sirius-perfumes.vercel.app',  'http://localhost:3000', 'http://localhost:3001','https://vercel.com', 'https://sirius-perfumes-yckn.vercel.app', 'https://accounts.google.com', 'http://api.siriusperfumes.com','https://api.siriusperfumes.com','http://siriusperfumes.com','http://admin.siriusperfumes.com', 'https://admin.siriusperfumes.com'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  credentials: true,
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
 }));
 
 

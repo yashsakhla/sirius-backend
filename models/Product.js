@@ -5,7 +5,7 @@ const ProductSchema = new mongoose.Schema({
   description: String,
   image: String,
   discountedPrice: { type: Number, required: true },  // price as given by admin
-  basicPrice: { type: Number, required: true },   
+  basicPrice: { type: Number, required: true },
   size: String,
   category: String,
   active: { type: Boolean, default: true }

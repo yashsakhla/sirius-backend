@@ -1,4 +1,5 @@
 import Product from '../models/Product.js';
+import Review from '../models/Review.js';
 import Offer from '../models/Offers.js';// Adjust import based on your project structure
 import User from '../models/User.js';
 
@@ -48,6 +49,77 @@ export const getProductDetails = async (req, res) => {
   } catch (err) {
     console.error('Error fetching product details:', err.message);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ✅ ADD PRODUCT REVIEW / RATING (stored in Review collection)
+export const addProductReview = async (req, res) => {
+  try {
+    const { id: productId } = req.params;
+    const { rating, comment, size } = req.body;
+
+    if (rating == null) {
+      return res.status(400).json({ message: 'Rating is required' });
+    }
+
+    const numericRating = Number(rating);
+    if (Number.isNaN(numericRating) || numericRating < 1 || numericRating > 5) {
+      return res
+        .status(400)
+        .json({ message: 'Rating must be a number between 1 and 5' });
+    }
+
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const newReview = new Review({
+      productId,
+      user: req.user?.id || null,
+      rating: numericRating,
+      comment: comment || '',
+      size: size || ''
+    });
+    await newReview.save();
+
+    res.status(201).json({
+      message: 'Review added successfully',
+      review: newReview
+    });
+  } catch (error) {
+    console.error('Error adding product review:', error);
+    res.status(500).json({ message: 'Server error while adding review' });
+  }
+};
+
+// ✅ GET REVIEWS BY PRODUCT ID
+export const getProductReviews = async (req, res) => {
+  try {
+    const { id: productId } = req.params;
+
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const reviews = await Review.find({ productId })
+      .sort({ createdAt: -1 })
+      .populate('user', 'name email');
+
+    const ratingCount = reviews.length;
+    const averageRating = ratingCount
+      ? reviews.reduce((sum, r) => sum + r.rating, 0) / ratingCount
+      : 0;
+
+    res.status(200).json({
+      reviews,
+      averageRating: Math.round(averageRating * 10) / 10,
+      ratingCount
+    });
+  } catch (error) {
+    console.error('Error fetching product reviews:', error);
+    res.status(500).json({ message: 'Server error while fetching reviews' });
   }
 };
 
