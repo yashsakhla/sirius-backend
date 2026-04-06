@@ -21,15 +21,12 @@ dotenv.config();
 
 
 const app = express();
-app.use(express.json());
 
-// serve uploaded product images
-app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 const allowedOrigins = [
   "https://www.siriusperfumes.com",
   "https://siriusperfumes.com",
   "http://localhost:3000",
-   "http://localhost:3001",
+  "http://localhost:3001",
   "https://sirius-perfumes.vercel.app",
   "https://sirius-perfumes-yckn.vercel.app",
   "https://vercel.com",
@@ -41,17 +38,33 @@ const allowedOrigins = [
   "https://admin.siriusperfumes.com",
 ];
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  credentials: true
-}));
+// Apply before body parsers so OPTIONS preflight is handled consistently
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Accept",
+      "Origin",
+      "X-Requested-With",
+    ],
+    credentials: true,
+    maxAge: 86400,
+  })
+);
+
+app.use(express.json());
+
+// serve uploaded product images
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 
 // ROUTES
