@@ -22,6 +22,321 @@ async function getAverageRatingsByProductIds(productIds) {
   return map;
 }
 
+/** Parse multipart / JSON fields that may be JSON strings */
+function parseMaybeJson(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') {
+    const t = value.trim();
+    if (!t) return null;
+    if (t.startsWith('[') || t.startsWith('{')) {
+      try {
+        return JSON.parse(t);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  return value;
+}
+
+/**
+ * Per-variant pricing (same rules as old product-level create):
+ * - Admin `price` is the selling / discounted amount → discountedPrice
+ * - basicPrice = discountedPrice × 2 (unless explicitly provided)
+ * Stored shape: { size, price, discountedPrice, basicPrice } with price === discountedPrice
+ */
+function finalizeSizeVariantPricing(entry) {
+  const sell =
+    entry.discountedPrice != null
+      ? parseFloat(String(entry.discountedPrice))
+      : entry.price != null
+        ? parseFloat(String(entry.price))
+        : NaN;
+  if (Number.isNaN(sell) || sell < 0) return null;
+  const discountedPrice = sell;
+  let basicPrice =
+    entry.basicPrice != null ? parseFloat(String(entry.basicPrice)) : parseFloat((discountedPrice * 2).toFixed(2));
+  if (Number.isNaN(basicPrice) || basicPrice < 0) {
+    basicPrice = parseFloat((discountedPrice * 2).toFixed(2));
+  }
+  const price = discountedPrice;
+  return { price, discountedPrice, basicPrice };
+}
+
+/** Build validated size[] for DB */
+function normalizeSizeVariantsInput(raw) {
+  const parsed = parseMaybeJson(raw);
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+  const out = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== 'object') continue;
+    const sizeLabel =
+      entry.size != null && String(entry.size).trim() ? String(entry.size).trim() : '';
+    if (!sizeLabel) continue;
+    const pricing = finalizeSizeVariantPricing(entry);
+    if (!pricing) continue;
+    out.push({
+      size: sizeLabel,
+      ...pricing,
+    });
+  }
+  return out.length ? out : null;
+}
+
+function isSizeVariantObject(item) {
+  return (
+    item &&
+    typeof item === 'object' &&
+    !Array.isArray(item) &&
+    (item.size != null || item.discountedPrice != null || item.price != null)
+  );
+}
+
+/** Normalize product.size for API + legacy docs (string labels + root price, or old sizeOptions key) */
+function enrichProductSizeForResponse(obj) {
+  if (Array.isArray(obj.sizeOptions) && obj.sizeOptions.length > 0) {
+    obj.size = obj.sizeOptions;
+    delete obj.sizeOptions;
+  }
+
+  const sizeArr = obj.size;
+  if (Array.isArray(sizeArr) && sizeArr.length > 0) {
+    if (isSizeVariantObject(sizeArr[0])) {
+      obj.size = sizeArr.map(item => {
+        if (!item || typeof item !== 'object') return item;
+        const sizeStr = item.size != null ? String(item.size).trim() : '';
+        if (!sizeStr) return item;
+        const pricing = finalizeSizeVariantPricing(item);
+        if (!pricing) return { ...item, size: sizeStr };
+        return { size: sizeStr, ...pricing };
+      });
+      delete obj.discountedPrice;
+      delete obj.basicPrice;
+      delete obj.price;
+      delete obj.sizeOptions;
+      if ('image' in obj) delete obj.image;
+      return obj;
+    }
+
+    const legacyDiscounted = obj.discountedPrice != null ? Number(obj.discountedPrice) : NaN;
+    const legacyBasic =
+      obj.basicPrice != null ? Number(obj.basicPrice) : Number.isFinite(legacyDiscounted)
+        ? Number((legacyDiscounted * 2).toFixed(2))
+        : NaN;
+    const labels = sizeArr.filter(v => v != null && v !== '').map(String);
+    if (labels.length && Number.isFinite(legacyDiscounted)) {
+      const basic = Number.isFinite(legacyBasic) ? legacyBasic : parseFloat((legacyDiscounted * 2).toFixed(2));
+      obj.size = labels.map(sz => ({
+        size: sz,
+        price: legacyDiscounted,
+        discountedPrice: legacyDiscounted,
+        basicPrice: basic,
+      }));
+    }
+  }
+
+  delete obj.discountedPrice;
+  delete obj.basicPrice;
+  delete obj.price;
+  delete obj.sizeOptions;
+  if ('image' in obj) delete obj.image;
+  return obj;
+}
+
+function getUnitPricesForSize(product, sizeKey) {
+  const opts = product.size;
+  if (!Array.isArray(opts) || !opts.length) return null;
+  const key = sizeKey != null ? String(sizeKey).trim() : '';
+  const opt = opts.find(o => o && String(o.size).trim() === key);
+  if (!opt) return null;
+  const d = Number(opt.discountedPrice ?? opt.price);
+  const b = Number(opt.basicPrice);
+  if (Number.isNaN(d)) return null;
+  const basic = Number.isNaN(b) ? Number((d * 2).toFixed(2)) : b;
+  return { discountedPrice: d, basicPrice: basic };
+}
+
+/**
+ * Cart lines: if `size` is missing/empty and the product has exactly one variant, use that size
+ * (backward compatible with clients that only send productId + qty for single-SKU products).
+ */
+function resolveCartLinePricing(resolvedProduct, requestedSize) {
+  const trimmed =
+    requestedSize != null && String(requestedSize).trim() !== '' && String(requestedSize).trim() !== 'null'
+      ? String(requestedSize).trim()
+      : '';
+  if (trimmed) {
+    const unit = getUnitPricesForSize(resolvedProduct, trimmed);
+    return unit ? { resolvedSize: trimmed, unit } : null;
+  }
+  const opts = resolvedProduct.size;
+  if (!Array.isArray(opts) || opts.length !== 1) return null;
+  const one = opts[0];
+  const label = one && one.size != null ? String(one.size).trim() : '';
+  if (!label) return null;
+  const unit = getUnitPricesForSize(resolvedProduct, label);
+  return unit ? { resolvedSize: label, unit } : null;
+}
+
+/** Max perfumes a customer may pick for one gift bundle */
+const MAX_GIFT_PERFUME_SLOTS = 4;
+
+function normalizeProductCategory(raw) {
+  const p = typeof raw === 'string' ? parseMaybeJson(raw) : raw;
+  if (p == null || p === '') return undefined;
+  if (typeof p !== 'object' || Array.isArray(p)) return undefined;
+  const type = p.type != null ? String(p.type).trim() : '';
+  if (!type) return undefined;
+  return {
+    type,
+    allowsCustomerProductChoice: Boolean(p.allowsCustomerProductChoice),
+  };
+}
+
+/**
+ * POST body: { giftProductId, giftSize, chosenProducts: [{ productId, size }] }
+ * Total = gift variant price + sum of each chosen perfume's variant price (max 4 slots, one size each, no duplicates).
+ */
+export const getGiftBundlePrice = async (req, res) => {
+  try {
+    const { giftProductId, giftSize, chosenProducts } = req.body;
+
+    if (!giftProductId) {
+      return res.status(400).json({ error: 'giftProductId is required' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(String(giftProductId))) {
+      return res.status(400).json({ error: 'Invalid giftProductId' });
+    }
+    if (giftSize == null || String(giftSize).trim() === '') {
+      return res.status(400).json({ error: 'giftSize is required (variant on the gift product, e.g. packaging tier)' });
+    }
+    if (!Array.isArray(chosenProducts)) {
+      return res.status(400).json({ error: 'chosenProducts must be an array' });
+    }
+    if (chosenProducts.length > MAX_GIFT_PERFUME_SLOTS) {
+      return res.status(400).json({
+        error: `A gift set allows at most ${MAX_GIFT_PERFUME_SLOTS} perfumes`,
+        maxPerfumes: MAX_GIFT_PERFUME_SLOTS,
+      });
+    }
+
+    const giftDoc = await Product.findById(giftProductId);
+    if (!giftDoc || !giftDoc.active) {
+      return res.status(404).json({ error: 'Gift product not found' });
+    }
+
+    const giftObj = enrichProductSizeForResponse(giftDoc.toObject());
+    const pc = giftObj.productCategory;
+    if (!pc || pc.type !== 'gift' || !pc.allowsCustomerProductChoice) {
+      return res.status(400).json({
+        error: 'This product is not a customizable gift (productCategory.type must be "gift" and allowsCustomerProductChoice true)',
+      });
+    }
+
+    const giftUnits = getUnitPricesForSize(giftObj, giftSize);
+    if (!giftUnits) {
+      return res.status(400).json({ error: 'Invalid giftSize for this gift product' });
+    }
+
+    const giftIdStr = giftDoc._id.toString();
+    const seenIds = new Set();
+
+    for (const line of chosenProducts) {
+      const pid = line?.productId;
+      const sz = line?.size != null ? String(line.size).trim() : '';
+      if (!pid || !sz) {
+        return res.status(400).json({
+          error: 'Each chosen item must include productId and a single size',
+        });
+      }
+      const pidStr = String(pid);
+      if (!mongoose.Types.ObjectId.isValid(pidStr)) {
+        return res.status(400).json({ error: `Invalid productId: ${pidStr}` });
+      }
+      if (pidStr === giftIdStr) {
+        return res.status(400).json({ error: 'The gift product itself cannot be listed in chosenProducts' });
+      }
+      if (seenIds.has(pidStr)) {
+        return res.status(400).json({ error: 'Each perfume may appear only once in the gift set' });
+      }
+      seenIds.add(pidStr);
+    }
+
+    const idList = [...seenIds];
+    const chosenDocs =
+      idList.length > 0 ? await Product.find({ _id: { $in: idList }, active: true }) : [];
+
+    if (idList.length !== chosenDocs.length) {
+      const found = new Set(chosenDocs.map(d => d._id.toString()));
+      const missing = idList.filter(id => !found.has(id));
+      return res.status(404).json({ error: 'One or more chosen products were not found', missing });
+    }
+
+    let perfumesDiscounted = 0;
+    let perfumesBasic = 0;
+    const chosen = [];
+
+    for (const line of chosenProducts) {
+      const pidStr = String(line.productId);
+      const sz = String(line.size).trim();
+      const p = chosenDocs.find(d => d._id.toString() === pidStr);
+      const pObj = enrichProductSizeForResponse(p.toObject());
+      const innerCat = pObj.productCategory;
+      if (innerCat?.type === 'gift' && innerCat?.allowsCustomerProductChoice) {
+        return res.status(400).json({
+          error: 'A customizable gift product cannot be added as a perfume inside another gift set',
+          productId: pidStr,
+        });
+      }
+      const unit = getUnitPricesForSize(pObj, sz);
+      if (!unit) {
+        return res.status(400).json({
+          error: `Invalid size "${sz}" for product ${p.name || pidStr}`,
+          productId: pidStr,
+          size: sz,
+        });
+      }
+      perfumesDiscounted += unit.discountedPrice;
+      perfumesBasic += unit.basicPrice;
+      chosen.push({
+        productId: p._id,
+        name: p.name,
+        size: sz,
+        price: unit.discountedPrice,
+        discountedPrice: unit.discountedPrice,
+        basicPrice: unit.basicPrice,
+      });
+    }
+
+    const totalDiscounted = giftUnits.discountedPrice + perfumesDiscounted;
+    const totalBasic = giftUnits.basicPrice + perfumesBasic;
+
+    res.json({
+      gift: {
+        productId: giftDoc._id,
+        name: giftDoc.name,
+        size: String(giftSize).trim(),
+        price: giftUnits.discountedPrice,
+        discountedPrice: giftUnits.discountedPrice,
+        basicPrice: giftUnits.basicPrice,
+      },
+      chosen,
+      giftPortionDiscounted: +giftUnits.discountedPrice.toFixed(2),
+      perfumesPortionDiscounted: +perfumesDiscounted.toFixed(2),
+      totalDiscountedPrice: +totalDiscounted.toFixed(2),
+      giftPortionBasic: +giftUnits.basicPrice.toFixed(2),
+      perfumesPortionBasic: +perfumesBasic.toFixed(2),
+      totalBasicPrice: +totalBasic.toFixed(2),
+      maxPerfumes: MAX_GIFT_PERFUME_SLOTS,
+      chosenCount: chosen.length,
+    });
+  } catch (err) {
+    console.error('getGiftBundlePrice:', err);
+    res.status(500).json({ error: 'Failed to calculate gift bundle price' });
+  }
+};
+
 export const getGroupedProducts = async (req, res) => {
   try {
     const allProducts = await Product.find();
@@ -34,7 +349,8 @@ export const getGroupedProducts = async (req, res) => {
         categoryMap.set(category, []);
       }
       const ratingData = ratingMap[product._id.toString()] || { averageRating: 0, ratingCount: 0 };
-      categoryMap.get(category).push({ ...product.toObject(), ...ratingData });
+      const obj = enrichProductSizeForResponse(product.toObject());
+      categoryMap.get(category).push({ ...obj, ...ratingData });
     });
 
     const grouped = Array.from(categoryMap.entries()).map(([category, products]) => ({
@@ -55,7 +371,8 @@ export const getProductsList = async (req, res) => {
     const ratingMap = await getAverageRatingsByProductIds(products.map(p => p._id));
     const productsWithRating = products.map(p => {
       const ratingData = ratingMap[p._id.toString()] || { averageRating: 0, ratingCount: 0 };
-      return { ...p.toObject(), ...ratingData };
+      const obj = enrichProductSizeForResponse(p.toObject());
+      return { ...obj, ...ratingData };
     });
     res.status(200).json(productsWithRating);
   } catch (err) {
@@ -73,7 +390,8 @@ export const getProductDetails = async (req, res) => {
     }
     const ratingMap = await getAverageRatingsByProductIds([product._id]);
     const ratingData = ratingMap[product._id.toString()] || { averageRating: 0, ratingCount: 0 };
-    res.status(200).json({ ...product.toObject(), ...ratingData });
+    const obj = enrichProductSizeForResponse(product.toObject());
+    res.status(200).json({ ...obj, ...ratingData });
   } catch (err) {
     console.error('Error fetching product details:', err.message);
     res.status(500).json({ message: 'Server error' });
@@ -153,32 +471,56 @@ export const getProductReviews = async (req, res) => {
 
 export const createProduct = async (req, res) => {
   try {
-    const { name, description, image, size, category, price, active } = req.body;
-    // 'price' from admin is 'discountedPrice'
-    if (!name || !price) {
-      return res.status(400).json({ message: 'Required fields are missing (name, price)' });
+    const { name, description, images, size, active, image } = req.body;
+    const rawSizeVariants = size ?? req.body.sizeOptions ?? req.body.sizes;
+
+    if (!name) {
+      return res.status(400).json({ message: 'Required fields are missing (name)' });
     }
     const exists = await Product.findOne({ name });
     if (exists) {
       return res.status(400).json({ message: 'Product with this name already exists' });
     }
-    const discountedPrice = parseFloat(price);
-    const basicPrice = parseFloat((discountedPrice * 2).toFixed(2));
+
+    const resolvedOptions = normalizeSizeVariantsInput(rawSizeVariants);
+    if (!resolvedOptions) {
+      return res.status(400).json({
+        message:
+          'size is required: array of variants with size + price (selling price) or discountedPrice; basicPrice defaults to 2× discountedPrice',
+      });
+    }
+
+    // Accept images from multipart upload (preferred) OR JSON body.
+    // Note: we no longer store a single `image` field; we always store `images[]`.
+    let imageList = [];
+    if (Array.isArray(req.files) && req.files.length) {
+      imageList = req.files.map(f => `/uploads/products/${f.filename}`);
+    } else if (Array.isArray(images)) {
+      imageList = images.filter(Boolean);
+    } else if (typeof images === 'string' && images.trim()) {
+      // allow comma-separated string
+      imageList = images.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (typeof image === 'string' && image.trim()) {
+      // Backward compatibility: if older client sends `image`, treat it as a single-item `images[]`.
+      imageList = [image.trim()];
+    }
+
+    const category = req.body.category;
+    const productCategory = normalizeProductCategory(req.body.productCategory);
 
     const newProduct = new Product({
       name,
       description,
-      image,
-      size,
+      images: imageList,
+      size: resolvedOptions,
       category,
-      discountedPrice,
-      basicPrice,
       active: active !== undefined ? active : true,
+      ...(productCategory ? { productCategory } : {}),
     });
     await newProduct.save();
     res.status(201).json({
       message: 'Product created successfully',
-      product: newProduct,
+      product: enrichProductSizeForResponse(newProduct.toObject()),
     });
   } catch (error) {
     console.error('Error creating product:', error);
@@ -190,19 +532,48 @@ export const createProduct = async (req, res) => {
 export const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, image, size, category, discountedPrice, active } = req.body;
+    const { name, description, images, size, category, active, image } = req.body;
+    const rawSizeVariants = size ?? req.body.sizeOptions ?? req.body.sizes;
 
     let updateFields = {};
     if (name != null) updateFields.name = name;
     if (description != null) updateFields.description = description;
-    if (image != null) updateFields.image = image;
-    if (size != null) updateFields.size = size;
     if (category != null) updateFields.category = category;
-    if (discountedPrice != null) {
-      updateFields.discountedPrice = parseFloat(discountedPrice);
-      updateFields.basicPrice = parseFloat((discountedPrice * 2).toFixed(2));
-    }
     if (active != null) updateFields.active = active;
+
+    // If multipart images uploaded, replace images with uploaded list.
+    // If JSON body images provided, replace images with that list.
+    if (Array.isArray(req.files) && req.files.length) {
+      const imageList = req.files.map(f => `/uploads/products/${f.filename}`);
+      updateFields.images = imageList;
+    } else if (images != null) {
+      let imageList = [];
+      if (Array.isArray(images)) {
+        imageList = images.filter(Boolean);
+      } else if (typeof images === 'string' && images.trim()) {
+        imageList = images.split(',').map(s => s.trim()).filter(Boolean);
+      }
+      updateFields.images = imageList;
+    } else if (typeof image === 'string' && image.trim()) {
+      // Backward compatibility: if older client sends `image`, treat it as single-item `images[]`.
+      updateFields.images = [image.trim()];
+    }
+
+    if (rawSizeVariants != null) {
+      const resolved = normalizeSizeVariantsInput(rawSizeVariants);
+      if (!resolved) {
+        return res.status(400).json({
+          message:
+            'size must be a non-empty array of variants with size + price or discountedPrice; basicPrice defaults to 2× discountedPrice',
+        });
+      }
+      updateFields.size = resolved;
+    }
+
+    if (req.body.productCategory !== undefined) {
+      const productCategory = normalizeProductCategory(req.body.productCategory);
+      if (productCategory) updateFields.productCategory = productCategory;
+    }
 
     const updatedProduct = await Product.findByIdAndUpdate(
       id,
@@ -212,7 +583,10 @@ export const updateProduct = async (req, res) => {
     if (!updatedProduct) {
       return res.status(404).json({ message: 'Product not found' });
     }
-    res.status(200).json({ message: 'Product updated successfully', product: updatedProduct });
+    res.status(200).json({
+      message: 'Product updated successfully',
+      product: enrichProductSizeForResponse(updatedProduct.toObject()),
+    });
   } catch (error) {
     console.error('❌ Error updating product:', error);
     res.status(500).json({ message: 'Server error', error: error.message });
@@ -269,21 +643,40 @@ export const getCartPrice = async (req, res) => {
 
     for (const item of products) {
       const product = dbProducts.find(p => p._id.toString() === item.productId);
-      if (product) {
-        const discountedTotal = (product.discountedPrice || product.price) * item.qty;
-        const basicTotal = (product.basicPrice || (product.discountedPrice * 2) || (product.price * 2)) * item.qty;
-        discountedSubtotal += discountedTotal;
-        basicSubtotal += basicTotal;
-        detailed.push({
-          _id: product._id,
-          name: product.name,
-          discountedPrice: product.discountedPrice,
-          basicPrice: product.basicPrice,
-          qty: item.qty,
-          discountedTotal,
-          basicTotal
+      if (!product) continue;
+
+      const resolvedProduct = enrichProductSizeForResponse(product.toObject());
+      const linePricing = resolveCartLinePricing(resolvedProduct, item.size);
+      if (!linePricing) {
+        const variantCount = Array.isArray(resolvedProduct.size) ? resolvedProduct.size.length : 0;
+        const message =
+          variantCount > 1
+            ? 'Each cart line must include size when the product has multiple variants'
+            : 'Each cart line must include a valid size that matches this product';
+        return res.status(400).json({
+          error: message,
+          productId: item.productId,
+          size: item.size ?? null,
         });
       }
+
+      const { resolvedSize, unit } = linePricing;
+      const qty = Number(item.qty) || 0;
+      const discountedTotal = unit.discountedPrice * qty;
+      const basicTotal = unit.basicPrice * qty;
+      discountedSubtotal += discountedTotal;
+      basicSubtotal += basicTotal;
+      detailed.push({
+        _id: product._id,
+        name: product.name,
+        size: resolvedSize,
+        price: unit.discountedPrice,
+        discountedPrice: unit.discountedPrice,
+        basicPrice: unit.basicPrice,
+        qty,
+        discountedTotal,
+        basicTotal,
+      });
     }
 
     let discount = 0;
@@ -307,8 +700,16 @@ export const getCartPrice = async (req, res) => {
         } else if (premiumOffer.type === 'Buy X Get Y Free') {
           const totalQty = products.reduce((sum, item) => sum + item.qty, 0);
           if (totalQty >= premiumOffer.buyQty) {
-            const cheapest = Math.min(...dbProducts.map(p => p.discountedPrice || p.price));
-            discount = cheapest * (premiumOffer.freeQty || 1);
+            const unitPrices = [];
+            for (const item of products) {
+              const p = dbProducts.find(x => x._id.toString() === item.productId);
+              const r = p ? resolveCartLinePricing(enrichProductSizeForResponse(p.toObject()), item.size) : null;
+              if (r) unitPrices.push(r.unit.discountedPrice);
+            }
+            if (unitPrices.length) {
+              const cheapest = Math.min(...unitPrices);
+              discount = cheapest * (premiumOffer.freeQty || 1);
+            }
           }
         }
       }
@@ -336,8 +737,16 @@ export const getCartPrice = async (req, res) => {
         } else if (offer.type === 'Buy X Get Y Free') {
           const totalQty = products.reduce((sum, item) => sum + item.qty, 0);
           if (totalQty >= offer.buyQty) {
-            const cheapest = Math.min(...dbProducts.map(p => p.discountedPrice || p.price));
-            discount = cheapest * (offer.freeQty || 1);
+            const unitPrices = [];
+            for (const item of products) {
+              const p = dbProducts.find(x => x._id.toString() === item.productId);
+              const r = p ? resolveCartLinePricing(enrichProductSizeForResponse(p.toObject()), item.size) : null;
+              if (r) unitPrices.push(r.unit.discountedPrice);
+            }
+            if (unitPrices.length) {
+              const cheapest = Math.min(...unitPrices);
+              discount = cheapest * (offer.freeQty || 1);
+            }
           }
         }
       }

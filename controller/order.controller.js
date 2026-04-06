@@ -1,17 +1,76 @@
 import Order from '../models/Order.js';
 import User from '../models/User.js';
-import Offer from '../models/Offers.js';
-import { getAuthToken, getPaymentStatus} from './payment.controller.js';
-import axios from 'axios';
+import { getPaymentStatus } from './payment.controller.js';
+
+function normalizeGiftBundles(raw) {
+  if (raw == null) return undefined;
+  if (!Array.isArray(raw)) return undefined;
+  const out = [];
+  for (const bundle of raw) {
+    if (!bundle || typeof bundle !== 'object') continue;
+    const giftProductId = bundle.giftProductId != null ? String(bundle.giftProductId).trim() : '';
+    const giftSize = bundle.giftSize != null ? String(bundle.giftSize).trim() : '';
+    if (!giftProductId || !giftSize) continue;
+    const chosen = Array.isArray(bundle.chosenProducts)
+      ? bundle.chosenProducts
+          .filter(c => c && typeof c === 'object')
+          .map(c => ({
+            productId: String(c.productId ?? '').trim(),
+            size: String(c.size ?? '').trim(),
+          }))
+          .filter(c => c.productId && c.size)
+      : [];
+    out.push({ giftProductId, giftSize, chosenProducts: chosen });
+  }
+  return out.length ? out : undefined;
+}
+
+function formatAddressForOwner(address) {
+  if (address == null) return '';
+  if (typeof address === 'object' && !Array.isArray(address)) {
+    const parts = [
+      address.line1,
+      address.line2,
+      address.line3,
+      address.city,
+      address.state,
+      address.pincode,
+      address.zip,
+      address.country,
+    ].filter(v => v != null && String(v).trim() !== '');
+    return parts.map(String).join(', ');
+  }
+  return String(address);
+}
 
 // ✅ User places an order
 export async function createOrder(req, res) {
   try {
-    const { products, coupon, offer, totalPrice, paymentMode, address, phone, productImg } = req.body;
+    const {
+      products,
+      coupon,
+      offer,
+      totalPrice,
+      paymentMode,
+      address,
+      phone,
+      productImg,
+      giftBundles,
+      amountPayableNow,
+      codAdvanceAmount,
+      codAdvancePercent,
+      codBalanceOnDelivery,
+    } = req.body;
     const userEmail = req.user?.email;
 
-    if (!products?.length || !userEmail || !totalPrice || !paymentMode) {
-      return res.status(400).json({ message: "Missing required fields." });
+    const productList = Array.isArray(products) ? products : [];
+    const normalizedGifts = normalizeGiftBundles(giftBundles);
+
+    if (!userEmail || totalPrice == null || !paymentMode) {
+      return res.status(400).json({ message: "Missing required fields (totalPrice, paymentMode, auth)." });
+    }
+    if (productList.length === 0 && !normalizedGifts?.length) {
+      return res.status(400).json({ message: "Provide products and/or giftBundles." });
     }
 
     const user = await User.findOne({ email: userEmail });
@@ -19,28 +78,53 @@ export async function createOrder(req, res) {
       return res.status(401).json({ message: "User not found." });
     }
 
+    const cityFromAddress =
+      address && typeof address === 'object' && !Array.isArray(address) ? address.city : undefined;
+
     // Generate a unique merchantOrderId for PhonePe
     const merchantOrderId = `ORDER_${Date.now()}`;
 
-    // Create order record
-    const newOrder = new Order({
-      products,
+    const orderPayload = {
+      products: productList,
       coupon,
       offer,
       totalPrice,
       paymentMode,
       merchantOrderId,
       productImg,
-      paymentStatus: 'PENDING', // initial status
+      paymentStatus: 'PENDING',
       owner: {
         name: user.name,
         email: user.email,
-        phone: user.phone,
-        city: address.city,
-        address: Object.values(address).join(", "),
+        phone: phone != null && String(phone).trim() !== '' ? String(phone).trim() : user.phone,
+        city: cityFromAddress ?? user.city,
+        address: formatAddressForOwner(address),
         userId: user._id,
-      }
-    });
+      },
+    };
+
+    if (address && typeof address === 'object' && !Array.isArray(address)) {
+      orderPayload.deliveryAddress = address;
+    }
+
+    if (normalizedGifts) {
+      orderPayload.giftBundles = normalizedGifts;
+    }
+
+    if (amountPayableNow != null && !Number.isNaN(Number(amountPayableNow))) {
+      orderPayload.amountPayableNow = Number(amountPayableNow);
+    }
+    if (codAdvanceAmount != null && !Number.isNaN(Number(codAdvanceAmount))) {
+      orderPayload.codAdvanceAmount = Number(codAdvanceAmount);
+    }
+    if (codAdvancePercent != null && !Number.isNaN(Number(codAdvancePercent))) {
+      orderPayload.codAdvancePercent = Number(codAdvancePercent);
+    }
+    if (codBalanceOnDelivery != null && !Number.isNaN(Number(codBalanceOnDelivery))) {
+      orderPayload.codBalanceOnDelivery = Number(codBalanceOnDelivery);
+    }
+
+    const newOrder = new Order(orderPayload);
 
     await newOrder.save();
 

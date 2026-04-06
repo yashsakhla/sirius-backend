@@ -15,15 +15,21 @@ import categoryRoutes from './routes/category.route.js';
 import orderRoutes from './routes/order.route.js'
 import dotenv from 'dotenv';
 import paymentRoutes from './routes/payment.route.js';
+import notificationRoutes from './routes/notification.route.js';
+import path from 'path';
 dotenv.config();
 
 
 const app = express();
 app.use(express.json());
+
+// serve uploaded product images
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 const allowedOrigins = [
   "https://www.siriusperfumes.com",
   "https://siriusperfumes.com",
   "http://localhost:3000",
+   "http://localhost:3001",
   "https://sirius-perfumes.vercel.app",
   "https://sirius-perfumes-yckn.vercel.app",
   "https://vercel.com",
@@ -56,6 +62,7 @@ app.use("/api/user", userRouter);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/payment', paymentRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Create HTTP server
 const server = http.createServer(app);
